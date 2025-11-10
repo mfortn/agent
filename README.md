@@ -293,6 +293,19 @@ BASH
 # 2) صلاحية التنفيذ
 sudo chmod +x /opt/agent/agent-chat
 ```
+```bash
+# أضف مقطع يلتقط :use <project> مباشرة بعد سطر القراءة
+sudo sed -i '/read -rp "أنت: " line || exit 0/a\
+  if [[ "$line" =~ ^:use[[:space:]]*(.+)$ ]]; then\
+    name="$(echo "${BASH_REMATCH[1]}" | awk '\''{$1=$1;print}'\'')"\
+    if [ -e "$PROJ_DIR/$name" ]; then\
+      CURRENT_PROJ="$name"; echo "تم اختيار المشروع: $CURRENT_PROJ";\
+    else\
+      echo "لم أجد مشروعاً بهذا الاسم: $name";\
+    fi;\
+    continue;\
+  fi' /opt/agent/agent-chat
+```
 
 ### 4.3 الإطلاق
 ```bash
