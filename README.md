@@ -63,7 +63,7 @@ cat > /opt/agent/config/agent.yaml <<'YAML'
 model: qwen2.5:7b-instruct-q4_0
 
 # عدّل هذا المسار عند الحاجة
-workspace_root: /workspace
+workspace_root: /home/mfortn/workspace
 
 project_requirements:
   must_have_dirs: ["api", "default"]
@@ -281,7 +281,7 @@ chmod +x /opt/agent/agent-chat
 - **الجلسة تخرج مباشرة؟**
   - تأكد من صلاحية التنفيذ:
     ```bash
-    chmod +x /opt/agent/agent-chat
+    sudo chmod +x /opt/agent/agent-chat
     ```
   - تأكد من أن خدمة Ollama تعمل:
     ```bash
