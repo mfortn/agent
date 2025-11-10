@@ -63,7 +63,8 @@ guess_files_from_prompt() {
     done <<< "$matches" | awk "NF"
     return 0
   fi
-  names=$(echo "$text" | sed "s/[،؛,.()\[\]{}<>'\"\`]/ /g" | tr -s ' ' | grep -oE "[A-Za-z0-9_-]+\.vue" | sort -u || true)
+  # نبسّط تنظيف الرموز: ما نحتاج نمسك الـ backtick نهائيًا
+  names=$(echo "$text" | sed "s/[،؛,.()\[\]{}<>'\"]/ /g" | tr -s ' ' | grep -oE "[A-Za-z0-9_-]+\\.vue" | sort -u || true)
   if [ -n "$names" ]; then
     while read -r bn; do
       [ -n "$bn" ] || continue
@@ -91,17 +92,20 @@ augment_with_files() {
     for f in "${files[@]}"; do
       rel="${f#$(project_root)/}"
       echo "--- path: ${rel:-$f} ---"
-      head -c "$max_bytes" "$f" | sed -e 's/\r//g'
+      head -c "$max_bytes" "$f" | tr -d '\r'
       echo
     done
     echo "[FILES CONTEXT END]"
   }
 }
 
+# نعرّف محدد الأسوار بدون كتابة رمز الـ backtick حرفيًا
+FENCE="$(printf '\x60\x60\x60')"
+
 extract_first_code_block() {
-  awk '
+  awk -v fence="$FENCE" '
   BEGIN{in=0}
-  /^```/ {
+  index($0,fence)==1 {
     if (in==0) { in=1; next }
     else { exit }
   }
@@ -147,8 +151,10 @@ call_ollama() {
   fi
 
   content="$(echo "$resp" | jq -r '.message.content')"
-  echo "{"role":"user","content":$(jq -Rs . <<<"$prompt")}"  >> "$HIST"
-  echo "{"role":"assistant","content":$(jq -Rs . <<<"$content")}" >> "$HIST"
+
+  # سجل آمن عبر jq
+  jq -n --arg u "$prompt"    '{role:"user",content:$u}'      >> "$HIST"
+  jq -n --arg a "$content"   '{role:"assistant",content:$a}' >> "$HIST"
 
   echo; echo "$content"; echo
 
@@ -165,8 +171,8 @@ call_ollama() {
     local code
     code="$(printf "%s\n" "$content" | extract_first_code_block || true)"
     if [ -z "$code" ]; then
-      echo "⚠️ --apply: لم أعثر على كتلة كود محصورة بين ``` في ردّ النموذج."
-      echo "نصيحة: اطلب منه أن يرجّع الملف كاملًا داخل كتلة كود."
+      echo "⚠️ --apply: لم أعثر على كتلة كود ضمن أسوار كود."
+      echo "نصيحة: اطلب من النموذج أن يرجّع الملف كاملًا داخل أسوار كود."
       return 0
     fi
     apply_code_to_file "$target" "$code" || true
