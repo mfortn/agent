@@ -181,26 +181,53 @@ sudo apt-get update && sudo apt-get install -y jq
 
 ### 4.2 سكربت المحادثة
 ```bash
-cat > /opt/agent/agent-chat <<'BASH'
+# 1) اكتب سكربت محسّن مكان القديم
+sudo tee /opt/agent/agent-chat >/dev/null <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 
 CFG_SYS="/opt/agent/config/context.md"
 SESS_DIR="/opt/agent/sessions"
 PROJ_DIR="/opt/agent/projects.d"
-MODEL="$(grep -E '^model:' /etc/ollama/config.yaml 2>/dev/null | awk '{print $2}')"
-MODEL="${MODEL:-qwen2.5:7b-instruct-q4_0}"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "⚠️ مطلوب تثبيت: $1"; exit 1; }; }
+need curl
+need jq
+
+# اكتشاف المودل تلقائياً من /api/tags أو اختيار افتراضي آمن
+detect_model() {
+  local m
+  m="$(curl -sS http://127.0.0.1:11434/api/tags | jq -r '.models[0].model // empty' || true)"
+  if [ -z "$m" ]; then
+    # حاول تشغيل ollama لو كانت الخدمة متوقفة، ثم جرب مرة ثانية
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl is-active --quiet ollama || systemctl start ollama || true
+    fi
+    m="$(curl -sS http://127.0.0.1:11434/api/tags | jq -r '.models[0].model // empty' || true)"
+  fi
+  if [ -z "$m" ]; then
+    m="qwen2.5:7b-instruct-q4_0"
+  fi
+  printf "%s" "$m"
+}
+
+MODEL="$(detect_model)"
 
 mkdir -p "$SESS_DIR"
 SESSION_ID="$(date +"%Y%m%d-%H%M%S")"
 HIST="$SESS_DIR/$SESSION_ID.jsonl"
-touch "$HIST"
+: > "$HIST"
 
 SYSTEM="$(cat "$CFG_SYS" 2>/dev/null || true)"
 CURRENT_PROJ=""
 
-say_help() { echo "أوامر: :projects | :use <project> | :reset | :quit"; }
-list_projects() { ls -1 "$PROJ_DIR" 2>/dev/null | sort -u; }
+say_help() {
+  echo "أوامر: :projects | :use <project> | :reset | :help | :quit"
+}
+
+list_projects() {
+  ls -1 "$PROJ_DIR" 2>/dev/null | sort -u || true
+}
 
 build_system() {
   local sys="$SYSTEM"
@@ -209,8 +236,7 @@ build_system() {
 
 # المشروع المحدد
 - المشروع: $CURRENT_PROJ
-- المسار: $(readlink -f "$PROJ_DIR/$CURRENT_PROJ" 2>/devالnull || echo "$PROJ_DIR/$CURRENT_PROJ")
-- بنية المشروع: يحتوي api/ و default/ و ملف .env.
+- المسار: $(readlink -f "$PROJ_DIR/$CURRENT_PROJ" 2>/dev/null || echo "$PROJ_DIR/$CURRENT_PROJ")
 "
   fi
   printf "%s" "$sys"
@@ -220,16 +246,20 @@ reset_session() { : > "$HIST"; echo "تمت إعادة تعيين المحادث
 
 call_ollama() {
   local prompt="$1"
-  local system_prompt
+  local system_prompt payload resp content
   system_prompt="$(build_system)"
-  local payload
   payload=$(jq -n --arg model "$MODEL" --arg system "$system_prompt" --arg user "$prompt" '{
-    model:$model,stream:false,
+    model:$model, stream:false,
     messages:[{role:"system",content:$system},{role:"user",content:$user}]
   }')
-  local resp
-  resp="$(curl -sS http://127.0.0.1:11434/api/chat -d "$payload")" || { echo "⚠️ فشل الاتصال بـ Ollama."; return 1; }
-  local content
+  resp="$(curl -sS http://127.0.0.1:11434/api/chat -d "$payload" || true)"
+  if [ -z "$resp" ] || [ "$(echo "$resp" | jq -r '.error? // empty')" != "" ]; then
+    echo "⚠️ فشل الاتصال بـ Ollama أو المودل غير متوفر: $MODEL"
+    echo "نصائح:"
+    echo " - تأكد أن خدمة ollama شغالة:  sudo systemctl status ollama"
+    echo " - تحقق من المودلات المثبتة:    curl -s http://127.0.0.1:11434/api/tags | jq"
+    return 1
+  fi
   content="$(echo "$resp" | jq -r '.message.content')"
   echo "{\"role\":\"user\",\"content\":$(jq -Rs . <<<"$prompt")}"  >> "$HIST"
   echo "{\"role\":\"assistant\",\"content\":$(jq -Rs . <<<"$content")}" >> "$HIST"
@@ -237,8 +267,8 @@ call_ollama() {
 }
 
 echo "جلسة Agent: $SESSION_ID  |  المودل: $MODEL"
+[ -f "$CFG_SYS" ] || echo "⚠️ ملاحظة: ملف السياق غير موجود: $CFG_SYS"
 say_help
-[ -ف "$CFG_SYS" ] || echo "⚠️ ملف السياق غير موجود."
 
 while true; do
   read -rp "أنت: " line || exit 0
@@ -246,6 +276,7 @@ while true; do
     ":quit"|":q") echo "مع السلامة 👋"; exit 0 ;;
     ":projects")  list_projects; continue ;;
     ":reset")     reset_session; continue ;;
+    ":help"|":h") say_help; continue ;;
     ":use "*)     name="${line#:use }"
                   if [ -L "$PROJ_DIR/$name" ] || [ -d "$PROJ_DIR/$name" ]; then
                     CURRENT_PROJ="$name"; echo "تم اختيار المشروع: $CURRENT_PROJ"
@@ -253,13 +284,14 @@ while true; do
                     echo "لم أجد مشروعاً بهذا الاسم."
                   fi
                   continue ;;
-    ":help"|":h") say_help; continue ;;
   esac
   [ -n "$line" ] || continue
-  call_ollama "$line"
+  call_ollama "$line" || true
 done
 BASH
-chmod +x /opt/agent/agent-chat
+
+# 2) صلاحية التنفيذ
+sudo chmod +x /opt/agent/agent-chat
 ```
 
 ### 4.3 الإطلاق
